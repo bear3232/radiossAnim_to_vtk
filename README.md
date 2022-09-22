@@ -10,7 +10,7 @@ It converts the following multiple animation files to vtk files at once.
 - ...
 - testA152 --> testA152.vtk
 
-This script requires `anim_to_vtk_linux64_gf`.
+This script requires [anim_to_vtk_linux64_gf](https://github.com/OpenRadioss/OpenRadioss/releases).
 
 ## Usage
     anim_to_vtk.pl testA001
