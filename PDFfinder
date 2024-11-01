@@ -1,0 +1,272 @@
+import tkinter as tk
+from tkinter import ttk
+from tkinter import filedialog
+from tkinter import messagebox
+import os
+from PyPDF2 import PdfReader
+import threading
+from datetime import datetime
+import re
+
+class PDFSearchApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("PDF検索アプリ")
+        self.root.geometry("800x600")
+        
+        # メインフレーム
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # フォルダ選択部分
+        folder_frame = ttk.Frame(main_frame)
+        folder_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
+        
+        self.folder_path = tk.StringVar()
+        ttk.Label(folder_frame, text="フォルダ:").grid(row=0, column=0, padx=5)
+        self.folder_entry = ttk.Entry(folder_frame, textvariable=self.folder_path, width=50)
+        self.folder_entry.grid(row=0, column=1, padx=5)
+        ttk.Button(folder_frame, text="参照", command=self.browse_folder).grid(row=0, column=2, padx=5)
+        
+        # 検索パターン入力部分
+        keyword_frame = ttk.Frame(main_frame)
+        keyword_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
+        
+        ttk.Label(keyword_frame, text="検索パターン:").grid(row=0, column=0, padx=5)
+        self.keyword_entry = ttk.Entry(keyword_frame, width=40)
+        self.keyword_entry.grid(row=0, column=1, padx=5)
+        
+        # 正規表現のヘルプボタン
+        ttk.Button(keyword_frame, text="正規表現ヘルプ", command=self.show_regex_help).grid(row=0, column=2, padx=5)
+        
+        # オプション部分
+        option_frame = ttk.Frame(main_frame)
+        option_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
+        
+        self.case_sensitive = tk.BooleanVar()
+        self.use_regex = tk.BooleanVar(value=True)
+        ttk.Checkbutton(option_frame, text="大文字/小文字を区別", variable=self.case_sensitive).grid(row=0, column=0, padx=5)
+        ttk.Checkbutton(option_frame, text="正規表現を使用", variable=self.use_regex).grid(row=0, column=1, padx=5)
+        
+        # 検索ボタン
+        self.search_button = ttk.Button(main_frame, text="検索開始", command=self.start_search)
+        self.search_button.grid(row=3, column=0, columnspan=3, pady=10)
+        
+        # プログレスバー
+        self.progress_var = tk.DoubleVar()
+        self.progress = ttk.Progressbar(main_frame, length=300, mode='determinate', variable=self.progress_var)
+        self.progress.grid(row=4, column=0, columnspan=3, pady=5, sticky=(tk.W, tk.E))
+        
+        # 結果表示部分
+        result_frame = ttk.Frame(main_frame)
+        result_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5)
+        
+        # 結果のリストボックス
+        self.result_text = tk.Text(result_frame, wrap=tk.WORD, width=80, height=20)
+        self.result_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # スクロールバー
+        scrollbar = ttk.Scrollbar(result_frame, orient=tk.VERTICAL, command=self.result_text.yview)
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.result_text.configure(yscrollcommand=scrollbar.set)
+        
+        # 検索結果保存ボタン
+        self.save_button = ttk.Button(main_frame, text="結果を保存", command=self.save_results)
+        self.save_button.grid(row=6, column=0, columnspan=3, pady=10)
+        
+        # グリッド設定
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(5, weight=1)
+        
+        # 検索中フラグ
+        self.searching = False
+        
+        # 正規表現コンパイルエラーを保持
+        self.regex_error = None
+
+    def show_regex_help(self):
+        help_text = """正規表現の主な使い方:
+
+• 文字マッチ
+  . : 任意の1文字
+  \w : 単語文字 [a-zA-Z0-9_]
+  \d : 数字 [0-9]
+  \s : 空白文字
+
+• 量指定子
+  * : 0回以上の繰り返し
+  + : 1回以上の繰り返し
+  ? : 0回または1回
+  {n} : n回の繰り返し
+  {n,} : n回以上の繰り返し
+  {n,m} : n回以上m回以下の繰り返し
+
+• グループと選択
+  (pattern) : グループ化
+  pattern1|pattern2 : いずれかにマッチ
+
+• 例
+  \d{3}[-\s]?\d{4} : 電話番号パターン
+  [A-Z]\w+ : 大文字で始まる単語
+  (株式|同資)会社 : "株式会社"または"同資会社"
+
+• エスケープ
+  特殊文字は \ でエスケープ
+  例: \. は文字としてのピリオド"""
+        
+        help_window = tk.Toplevel(self.root)
+        help_window.title("正規表現ヘルプ")
+        help_window.geometry("400x500")
+        
+        text = tk.Text(help_window, wrap=tk.WORD, padx=10, pady=10)
+        text.pack(fill=tk.BOTH, expand=True)
+        text.insert(tk.END, help_text)
+        text.configure(state='disabled')
+
+    def browse_folder(self):
+        folder_path = filedialog.askdirectory()
+        if folder_path:
+            self.folder_path.set(folder_path)
+
+    def validate_regex(self, pattern):
+        try:
+            flags = 0 if self.case_sensitive.get() else re.IGNORECASE
+            re.compile(pattern, flags)
+            self.regex_error = None
+            return True
+        except re.error as e:
+            self.regex_error = str(e)
+            return False
+
+    def start_search(self):
+        if self.searching:
+            return
+            
+        folder_path = self.folder_path.get()
+        pattern = self.keyword_entry.get()
+        
+        if not folder_path or not pattern:
+            messagebox.showerror("エラー", "フォルダと検索パターンを入力してください。")
+            return
+            
+        if not os.path.exists(folder_path):
+            messagebox.showerror("エラー", "指定されたフォルダが存在しません。")
+            return
+            
+        if self.use_regex.get() and not self.validate_regex(pattern):
+            messagebox.showerror("正規表現エラー", f"正規表現パターンが無効です: {self.regex_error}")
+            return
+            
+        # 検索前に結果をクリア
+        self.result_text.delete(1.0, tk.END)
+        self.progress_var.set(0)
+        self.searching = True
+        self.search_button.configure(state='disabled')
+        
+        # 別スレッドで検索を実行
+        thread = threading.Thread(target=self.search_pdfs, args=(folder_path, pattern))
+        thread.daemon = True
+        thread.start()
+
+    def search_pdfs(self, folder_path, pattern):
+        try:
+            pdf_files = [f for f in os.listdir(folder_path) if f.lower().endswith('.pdf')]
+            total_files = len(pdf_files)
+            
+            if not total_files:
+                self.update_result("PDFファイルが見つかりませんでした。\n")
+                return
+                
+            self.update_result(f"検索開始: {total_files} 個のPDFファイルを検索します...\n\n")
+            
+            # 正規表現フラグの設定
+            flags = 0 if self.case_sensitive.get() else re.IGNORECASE
+            if self.use_regex.get():
+                pattern = re.compile(pattern, flags)
+            
+            for i, pdf_file in enumerate(pdf_files, 1):
+                file_path = os.path.join(folder_path, pdf_file)
+                try:
+                    reader = PdfReader(file_path)
+                    
+                    for page_num, page in enumerate(reader.pages, 1):
+                        try:
+                            text = page.extract_text()
+                            lines = text.split('\n')
+                            
+                            for line_num, line in enumerate(lines, 1):
+                                if self.use_regex.get():
+                                    if pattern.search(line):
+                                        # マッチ部分をハイライト
+                                        highlighted_line = pattern.sub(
+                                            lambda m: f"【{m.group(0)}】",
+                                            line
+                                        )
+                                        self.output_match(pdf_file, page_num, line_num, highlighted_line)
+                                else:
+                                    # 通常の文字列検索
+                                    search_text = line if self.case_sensitive.get() else line.lower()
+                                    search_pattern = pattern if self.case_sensitive.get() else pattern.lower()
+                                    if search_pattern in search_text:
+                                        self.output_match(pdf_file, page_num, line_num, line)
+                                    
+                        except Exception as e:
+                            self.update_result(f"警告: {pdf_file} のページ {page_num} の処理中にエラー: {str(e)}\n")
+                            
+                except Exception as e:
+                    self.update_result(f"エラー: {pdf_file} の処理中にエラー: {str(e)}\n")
+                
+                # プログレスバーの更新
+                progress = (i / total_files) * 100
+                self.root.after(0, lambda p=progress: self.progress_var.set(p))
+            
+            self.update_result("\n検索完了\n")
+            
+        finally:
+            self.root.after(0, self.search_completed)
+
+    def output_match(self, pdf_file, page_num, line_num, line):
+        result = (
+            f"ファイル: {pdf_file}\n"
+            f"ページ: {page_num}\n"
+            f"行: {line_num}\n"
+            f"内容: {line.strip()}\n"
+            f"{'-' * 80}\n\n"
+        )
+        self.update_result(result)
+
+    def update_result(self, text):
+        self.root.after(0, lambda: self.result_text.insert(tk.END, text))
+
+    def search_completed(self):
+        self.searching = False
+        self.search_button.configure(state='normal')
+
+    def save_results(self):
+        if not self.result_text.get(1.0, tk.END).strip():
+            messagebox.showwarning("警告", "保存する検索結果がありません。")
+            return
+            
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("テキストファイル", "*.txt")],
+            initialfile=f"pdf_search_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(self.result_text.get(1.0, tk.END))
+                messagebox.showinfo("成功", "検索結果を保存しました。")
+            except Exception as e:
+                messagebox.showerror("エラー", f"保存中にエラーが発生しました: {str(e)}")
+
+def main():
+    root = tk.Tk()
+    app = PDFSearchApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
